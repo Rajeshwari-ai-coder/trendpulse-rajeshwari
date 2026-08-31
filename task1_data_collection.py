@@ -3,7 +3,6 @@ TrendPulse - Task 1: Data Collection
 Fetches trending stories from HackerNews API and categorizes them
 Author: Rajeshwari
 """
-
 import requests
 import time
 import json
