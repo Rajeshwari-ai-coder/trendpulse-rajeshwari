@@ -1,13 +1,19 @@
+"""
+TrendPulse - Task 1: Data Collection
+Fetches trending stories from HackerNews API and categorizes them
+Author: Rajeshwari
+"""
+
 import requests
+import time
 import json
 import os
-import time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import defaultdict
 
+# Required header as per task
 headers = {"User-Agent": "TrendPulse/1.0"}
 
+# Category keywords to match (case-insensitive)
 categories = {
     "technology": ["AI", "software", "tech", "code", "computer", "data", "cloud", "API", "GPU", "LLM"],
     "worldnews": ["war", "government", "country", "president", "election", "climate", "attack", "global"],
@@ -16,69 +22,90 @@ categories = {
     "entertainment": ["movie", "film", "music", "Netflix", "game", "book", "show", "award", "streaming"]
 }
 
-session = requests.Session()
-session.headers.update(headers)
+# Step 1 - Get top 500 story IDs
+url = "https://hacker-news.firebaseio.com/v0/topstories.json"
 
-TARGET_PER_CAT = 25
-MAX_IDS = 250 # 250 is enough to get 125 stories
-
-print("Fetching top story IDs...")
-top_ids = session.get(
-    "https://hacker-news.firebaseio.com/v0/topstories.json",
-    timeout=15
-).json()[:MAX_IDS]
-
-def fetch_story(sid):
-    try:
-        r = session.get(f"https://hacker-news.firebaseio.com/v0/item/{sid}.json", timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+try:
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    story_ids = response.json()[:500] # Fetch first 500 as per task
+    print(f"Fetched {len(story_ids)} top story IDs")
+except Exception as e:
+    print(f"Failed to fetch top stories: {e}")
+    story_ids = []
 
 stories = []
-counts = {c: 0 for c in categories}
+category_count = {category: 0 for category in categories}
 
-print(f"Fetching {len(top_ids)} stories in parallel...")
-with ThreadPoolExecutor(max_workers=20) as executor:
-    futures = {executor.submit(fetch_story, sid): sid for sid in top_ids}
+# Step 2 - We need to check each story and assign category
+# Task says: Wait 2 seconds between each category (one sleep per category loop)
+# So we will loop categories one by one
 
-    for future in as_completed(futures):
-        story = future.result()
-        if not story or not story.get("title"):
-            continue
+for category, keywords in categories.items():
+    print(f"\nCollecting for category: {category}...")
 
-        title_lower = story.get("title","").lower()
+    # If already have 25 for this category, skip
+    if category_count[category] >= 25:
+        continue
 
-        for cat, keywords in categories.items():
-            if counts[cat] >= TARGET_PER_CAT:
+    for story_id in story_ids:
+        # Stop if we already have 25 for this current category
+        if category_count[category] >= 25:
+            break
+
+        # Stop if we have collected 125 total (25*5)
+        if sum(category_count.values()) >= 125:
+            break
+
+        try:
+            # Fetch each story details
+            item_url = f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
+            res = requests.get(item_url, headers=headers, timeout=10)
+            res.raise_for_status()
+            story = res.json()
+
+            if not story or not story.get("title"):
                 continue
-            if any(k.lower() in title_lower for k in keywords):
+
+            title = story.get("title", "")
+            title_lower = title.lower()
+
+            # Check if title contains any keyword for THIS category
+            if any(keyword.lower() in title_lower for keyword in keywords):
+                # Check if this story already collected (avoid duplicates)
+                if any(s["post_id"] == story.get("id") for s in stories):
+                    continue
+
+                # Extract required 7 fields
                 stories.append({
                     "post_id": story.get("id"),
-                    "title": story.get("title"),
-                    "category": cat,
+                    "title": title,
+                    "category": category,
                     "score": story.get("score", 0),
                     "num_comments": story.get("descendants", 0),
                     "author": story.get("by", ""),
-                    "url": story.get("url", ""),
                     "collected_at": datetime.now().isoformat()
                 })
-                counts[cat] += 1
-                break
+                category_count[category] += 1
 
-        if all(v == TARGET_PER_CAT for v in counts.values()):
-            break
+        except Exception as e:
+            # If request fails, print and move on - don't crash
+            print(f"Failed to fetch story {story_id}: {e}")
+            continue
 
-# Sort by category for neatness
-stories.sort(key=lambda x: x['category'])
+    # Wait 2 seconds between each category as per task requirement
+    print(f"Collected {category_count[category]} for {category}. Waiting 2 sec...")
+    time.sleep(2)
 
+# Step 3 - Save to JSON file
 os.makedirs("data", exist_ok=True)
-date_str = datetime.now().strftime("%Y%m%d")
-file_path = f"data/trends_{date_str}.json"
 
-with open(file_path, "w", encoding="utf-8") as f:
-    json.dump(stories, f, indent=4, ensure_ascii=False)
+date_string = datetime.now().strftime("%Y%m%d")
+file_path = f"data/trends_{date_string}.json"
 
-print(f"✅ Collected {len(stories)} stories | {counts}")
-print(f"Saved to {file_path}")
+with open(file_path, "w", encoding="utf-8") as file:
+    json.dump(stories, file, indent=4, ensure_ascii=False)
+
+# Expected output format
+print(f"\nCollected {len(stories)} stories. Saved to {file_path}")
+print(f"Breakdown: {category_count}")
